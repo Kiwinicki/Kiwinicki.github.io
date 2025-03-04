@@ -5,8 +5,11 @@ import {themes as prismThemes} from 'prism-react-renderer';
 export default {
   title: 'ML blog',
   tagline: '',
-  url: 'https://kiwinicki.github.io',
-  baseUrl: '/',
+  url: 'https://github.com',
+  baseUrl: '/blog/',
+  projectName: 'blog',
+  organizationName: 'kiwinicki',
+  deploymentBranch: 'gh-pages',
   presets: [
     [
       '@docusaurus/preset-classic',
