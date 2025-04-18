@@ -4,7 +4,9 @@ List of all sort of things you can use make your training/finetuning go faster. 
 
 1. buy bigger GPU.
 
-## Optimizer
+## Memory Optimization Techniques
+
+### Optimizer Memory Reduction
 
 - 8-bit Adam -  2\*8-bit vs 2\*32-bit = ~75% less memory for optimizer states
 - Not storing activations from forward pass but recomputing them in backward pass (memory-compute tradeoff)
@@ -15,7 +17,7 @@ List of all sort of things you can use make your training/finetuning go faster. 
     optim.load_state_dict(ckpt["optim"])
     ```
 
-## PEFT
+### Parameter-Efficient Methods
 
 - LoRA (Low-Rank Adaptation) - thin layer over frozen pretrained layers of your model. It uses a trick of decomposing a large matrix into two smaller low-rank ($n\times m$ where $n << m$) matrices that gives huge memory savings. Slightly more formal:
 
@@ -27,44 +29,15 @@ List of all sort of things you can use make your training/finetuning go faster. 
         - at the begining $AB$ are no-op but thanks to $A$ being Gaussian there will be symmetry breaking
     - some good links about it: [Sebastian Raschka](https://magazine.sebastianraschka.com/p/lora-and-dora-from-scratch), [AI Coffe Break](https://youtu.be/KEv-F5UkhxU?si=JcCjdEV-7tXPvk2r)
 - QLoRA - It differs in that base model is quantized (usually to 4-bit) but LoRA layers are kept in 16-bit precision
-- After training its good to merge LoRA layers with the base model for less overhead (but you can't swap them later).
+- After training its good to merge LoRA layers with the base model for less latency and computational overhead (but you can't swap if you have more of them).
 - DoRA - decomposition of weight matrix into magnitude vector $m$ (euclidean distance) & directional matrix $V$ (angle) and train them separately.
 - GaLore - LoRA but for gradient matrix. Supposedly works also for pretraining in contrast to LoRA, but I didn't tried it.
 - Prefix Tuning - In place of the prompt you put a random init vector (the so-called prefix) and optimize it until you get the correct answer.
-    - "+" tiny amount of parameters to tune
-    - "-" takes context length (but alternatively you would put pre-prompt there)
-    - "-" interpretability - these are not words, but you can decode it to "nearest" words but it often gibberish
+    - ✅ tiny amount of parameters to tune
+    - ❌ takes context length (but alternatively you would put pre-prompt there)
+    - ❌ interpretability - these are not words, but you can decode it to "nearest" words but it often gibberish
 
-## Training initialization
-
-- init weights properly (relaying on default pytorch init isn't always optimal)
-- LR scheduler (OneCycleLR, lr warmup, etc.) and lr search. Similar for BS (batch size warmup etc.)
-- max out batch size to fill whole VRAM ([batch size finder](https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.BatchSizeFinder.html))
-- some rule regarding relation of LR & BS - [$LR \approx \sqrt{BS}$](https://x.com/cloneofsimo/status/1907731069878825400) (there is also issue of "[critical batch size](https://x.com/SeunghyunSEO7/status/1877188952920125836)")
-- if you can't fit enough batch size for stable training (e.g. bsz=1) then use gradient accumulation. In pure pytorch it is calling opt.step() less frequently what results in effectively higher batch size.
-- gradient clipping - prevents exploding gradients by capping their magnitude during backpropagation.
-- Start from pretrained model (transfer learning) and swap last layer.
-    - Freeze whole model except last layer and after few epochs gradually unfreeze rest of the layers.
-
-## Architecture
-
-- normalization layers (stabilize and speeding up training - you can use higher LR)
-- turn off bias before BatchNorm (bn already does shift)
-- MoE - model architecture which selectively activates only part of the model. memory-computation tradeoff. MoE faster achives same loss under the same computational budged compared to dense models.
-- MoD (Mixture of Depths) - learned skip connection for each transformer block, model learns to not waste compute on easy tokens.
-- Stochastic Depth - each layer in **deep** ConvNet have probability of not being dropped from 1.0 (for first layer) to 0.5 (for last layer). Simply dropout whole layers (prevents vanishing gradients, faster training,  better performance)
-
-### LLM only
-
-- SuperBPE - groups frequent word sequences into single tokens, improving efficiency and performance. Common word combinations get treated as one unit by the tokenizer, which reduces the number of easy-to-predict sequences. This creates a more balanced prediction difficulty across tokens, allowing the model to distribute computational effort more effectively. [Author explaination](https://x.com/alisawuffles/status/1903125390618661068)
-
-### Diffusion only
-
-- latent diffusion - diffuse in latent space, not pixel space. VAE encoder $\rightarrow$ latent (diffuse $N\times$) $\rightarrow$ VAE decoder. SD1.5 VAE maybe big but you can use [TAESD](https://huggingface.co/madebyollin/taesd) ($(3\cdot512\cdot512)/(16\cdot64\cdot64)=12\times$ compression, 5MB for enc/dec each and minimal computational overhead)
-    - if you want train on ImageNet: https://huggingface.co/datasets/fal/cosmos-imagenet (compressed to 2.45GB)
-- [Min-SNR](https://arxiv.org/abs/2303.09556) - method of adding a weightning to the loss based on the SNR (signal to noise ratio) of the timestep. It prevents conflicting gradients from different deniosing phases (beggining, mid and final refinements)
-
-## Mixed precision
+### Mixed Precision Strategies
 
 https://sebastianraschka.com/blog/2023/llm-mixed-precision-copy.html
 
@@ -79,6 +52,8 @@ All types other than FP32 are only faster on consumer cards due to Tensor cores 
     \underbrace{(4+2\ \text{bytes})}_{\text{{model FP32+FP16}}} + 
     \underbrace{(2\ \text{bytes})}_{\text{{activation FP16}}} + \underbrace{(4\ \text{bytes})}_{\text{{gradients FP32}}} = 12\ \text{bytes (+8 bytes for Adam)}\end{align*}
     $$
+
+    *memory savings will be only visible if your batch size is sufficiently large and outweight additional cost of storing copy of weights in 16-bits
     
 - turn on **TF32** (Tensor Float) (speed) - not all operations are supported in 16-bit mixed-precision and have to be done in FP32. Turning on TF32 replaces FP32 in computation (storage still in FP32) at speeds similar to FP16. TF32 is supported on Ampere arch and newer. Fun fact is that TF32 is 19-bit format but has "32" in name.
     
@@ -101,14 +76,65 @@ All types other than FP32 are only faster on consumer cards due to Tensor cores 
     \underbrace{(1\ \text{byte})}_{\text{{gradients FP8 E5M2}}} = 3\ \text{bytes (+8 bytes for Adam)}\end{align*}
     $$
 
-## Other
+## Computational Efficiency
+
+### Forward/Backward Pass Optimization
+
+- set gradients to `None` instead of default `0` (but this can cause some unexpected behaviors - `None` isn't a number so operations with it produces `NaN`)
+- non-global Cross-Entropy calculation reduces memory usage spike at the end (especially beneficial for LLMs). [paper](https://arxiv.org/abs/2411.09009)
+
+### Hardware Utilization
 
 - avoid moving tensors to another device `.to(device)`, create tensors directly on target device instead. If you don't have any synchronization later in code then you can use `.to(non_blocking=True)`
 - use `torch.compile()` if it works, for me it usualy don't.
-- set gradients to `None` instead of default `0` (but this can cause some unexpected behaviors - `None` isn't a number so operations with it produces `NaN`)
+- `torch.backends.cudnn.benchmark = True`
+
+## Training Dynamics
+
+### Initialization & Learning Rate
+
+- init weights properly (relaying on default pytorch init isn't always optimal)
+- LR scheduler (OneCycleLR, lr warmup, etc.) and lr search. Similar for BS (batch size warmup etc.)
+- some rule regarding relation of LR & BS - [$LR \approx \sqrt{BS}$](https://x.com/cloneofsimo/status/1907731069878825400) (there is also issue of "[critical batch size](https://x.com/SeunghyunSEO7/status/1877188952920125836)")
+
+### Batch Processing
+
+- max out batch size to fill whole VRAM ([batch size finder](https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.BatchSizeFinder.html))
+- if you can't fit enough batch size for stable training (e.g. bsz=1) then use gradient accumulation. In pure pytorch it boils down to calling opt.step() less frequently what results in effectively higher batch size.
+
+### Stability Techniques
+
+- gradient clipping - prevents exploding gradients by capping their magnitude during backpropagation.
+- weights clipping - regularization technique, similar to weight decay in some sense but this isn't connected with loss calc.
+- start from pretrained model (transfer learning) and swap last layer.
+    - Freeze whole model except last layer and after few epochs gradually unfreeze rest of the layers (ULMFiT, gradual unfreezing).
+- constraint latent space of your model to align with some general pretrained model, stabilizes training and reduces overfitting (can be done by feature matching losses).
+
+## Model-Specific Optimizations
+
+### LLM Techniques
+
+- SuperBPE - groups frequent word sequences into single tokens, improving efficiency and performance. Common word combinations get treated as one unit by the tokenizer, which reduces the number of easy-to-predict sequences. This creates a more balanced prediction difficulty across tokens, allowing the model to distribute computational effort more effectively. [Author explaination](https://x.com/alisawuffles/status/1903125390618661068)
+
+### Diffusion Model Techniques
+
+- latent diffusion - diffuse in latent space, not pixel space. VAE encoder $\rightarrow$ latent (diffuse $N\times$) $\rightarrow$ VAE decoder. SD1.5 VAE maybe big but you can use [TAESD](https://huggingface.co/madebyollin/taesd) ($(3\cdot512\cdot512)/(16\cdot64\cdot64)=12\times$ compression, 5MB for enc/dec each and minimal computational overhead)
+    - if you want train on ImageNet: https://huggingface.co/datasets/fal/cosmos-imagenet (compressed to 2.45GB)
+- [Min-SNR](https://arxiv.org/abs/2303.09556) - method of adding a weightning to the loss based on the SNR (signal to noise ratio) of the timestep. It prevents conflicting gradients from different deniosing phases (beggining, mid and final refinements)
+
+## Implementation Tricks
+
+### PyTorch Data Handling
+
 - use `.as_tensor()` rather than `.tensor()`. `torch.tensor()` always copies data. If you have a numpy array that you want to convert, use `torch.as_tensor()` or `torch.from_numpy()` to avoid copying the data.
 - try "channel last" format for tensors and model (NCHW => NHWC), sometimes it's faster. [link](https://pytorch.org/tutorials/intermediate/memory_format_tutorial.html)
-- `torch.backends.cudnn.benchmark = True`
 - slow dataloader optimizations [Simo tweet](https://x.com/cloneofsimo/status/1855608988681080910), [PyTorch forum](https://discuss.pytorch.org/t/how-to-prefetch-data-when-processing-with-gpu/548/19)
-- non-global Cross-Entropy calculation reduces memory usage spike at the end (especially beneficial for LLMs). [paper](https://arxiv.org/abs/2411.09009)
+
+## Other
+
+- normalization layers (stabilize and speeding up training - you can use higher LR)
+- turn off bias before BatchNorm (bn already does shift)
+- MoE - model architecture which selectively activates only part of the model. memory-computation tradeoff. MoE faster achives same loss under the same computational budged compared to dense models.
+- MoD (Mixture of Depths) - learned skip connection for each transformer block, model learns to not waste compute on easy tokens.
+- Stochastic Depth - each layer in **deep** ConvNet have probability of not being dropped from 1.0 (for first layer) to 0.5 (for last layer). Simply dropout whole layers (prevents vanishing gradients, faster training,  better performance)
 - checkpoint averaging - weighted average of previous checkpoints makes loss landscape more smooth and convex which speeds up training + reduces overfitting (applies to pretraining & finetuning)
